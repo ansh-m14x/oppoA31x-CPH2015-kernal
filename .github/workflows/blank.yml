@@ -1,31 +1,63 @@
-name: Import Official OPPO A31 Source
+name: Build A31 Permissive Kernel
 
 on:
-  workflow_dispatch: # Allows you to click a button to start the import
+  workflow_dispatch:
+
+# This section fixes the "Failed" error by giving the bot permission to run
+permissions:
+  contents: write
 
 jobs:
-  import-source:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Current Repo
-        uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync squashfs-tools xsltproc zip zlib1g-dev libncurses5-dev libssl-dev libncurses5
 
-      - name: Download & Extract Source
+      - name: Download Source & Toolchains
         run: |
-          # 1. Configure Git
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
+          # Download the source from the A31 repo you found
+          git clone https://github.com/oppo-source/A31.git --depth=1 kernel-source
           
-          # 2. Clone the official source (Only the kernel-4.9 part to save space)
-          git clone --depth=1 https://github.com/oppo-source/A31.git official-repo
-          
-          # 3. Move the kernel files to the root of your current repo
-          # This extracts the 'kernel-4.9' folder contents into your repo's root
-          cp -r official-repo/kernel-4.9/* .
-          rm -rf official-repo
-          
-      - name: Commit and Push to My Repo
+          # Download Toolchains (Standard AOSP)
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 clang
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1 gcc64
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 --depth=1 gcc32
+
+      - name: Patch to Permissive
         run: |
-          git add .
-          git commit -m "Imported official OPPO A31 kernel source" || echo "No changes to commit"
-          git push origin main --force
+          cd kernel-source/kernel-4.9
+          
+          # Set the defconfig to allow permissive boot
+          CONF="arch/arm64/configs/oppo6765_defconfig"
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $CONF
+          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $CONF
+          echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> $CONF
+          
+          # Hardcode the source code to ignore "Enforcing" commands
+          sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c
+
+      - name: Build
+        run: |
+          cd kernel-source/kernel-4.9
+          
+          # Setup toolchain path
+          CLANG_DIR=$(ls -d $GITHUB_WORKSPACE/clang/clang-r*)
+          export PATH=$CLANG_DIR/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH
+          
+          export ARCH=arm64
+          export SUBARCH=arm64
+          
+          # 1. Generate Config
+          make O=out CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang CLANG_TRIPLE=aarch64-linux-gnu- oppo6765_defconfig
+          
+          # 2. Compile Kernel
+          make O=out CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc --all)
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: A31-Permissive-Kernel
+          path: kernel-source/kernel-4.9/out/arch/arm64/boot/Image.gz-dtb
