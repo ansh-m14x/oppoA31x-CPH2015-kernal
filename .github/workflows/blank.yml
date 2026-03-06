@@ -1,41 +1,4 @@
-name: Build A31 Permissive Kernel
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 libxml2-utils lzop pngcrush rsync squashfs-tools xsltproc zip zlib1g-dev libncurses5-dev libssl-dev libncurses5
-
-      - name: Download Source & Toolchains
-        run: |
-          git clone https://github.com/oppo-source/A31.git --depth=1 kernel-source
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 clang
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1 gcc64
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 --depth=1 gcc32
-
-      - name: Patch to Permissive
-        run: |
-          cd kernel-source/kernel-4.9
-          
-          # Patch defconfig
-          CONF="arch/arm64/configs/oppo6765_defconfig"
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> $CONF
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE=0" >> $CONF
-          echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> $CONF
-          
-          # Hardcode SELinux Permissive
-          sed -i 's/static int selinux_enforcing = 1;/static int selinux_enforcing = 0;/g' security/selinux/hooks.c
-
-      - name: Build Kernel
+      - name: Build NetHunter Kernel
         run: |
           cd kernel-source/kernel-4.9
           
@@ -45,17 +8,16 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # Clean environment to prevent stale errors
+          # 1. Clean workspace to avoid build errors
           make O=out mrproper
           
-          # Generate config
+          # 2. Generate initial config
           make O=out CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang CLANG_TRIPLE=aarch64-linux-gnu- oppo6765_defconfig
           
-          # Build only the core Image
+          # 3. Enable NetHunter features (Simple version)
+          # These are essential for HID attacks and USB gadget support
+          echo "CONFIG_USB_HID=y" >> out/.config
+          echo "CONFIG_USB_GADGET=y" >> out/.config
+          
+          # 4. Build Kernel Image ONLY (Skips DTBO check)
           make O=out CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang CLANG_TRIPLE=aarch64-linux-gnu- Image.gz-dtb -j$(nproc --all)
-
-      - name: Upload Kernel Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: A31-Permissive-Kernel
-          path: kernel-source/kernel-4.9/out/arch/arm64/boot/Image.gz-dtb
